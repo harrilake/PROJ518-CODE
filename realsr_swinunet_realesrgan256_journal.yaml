@@ -1,0 +1,176 @@
+validate_only: True
+debug: False
+
+resume: /scratch/p26/hlake1/ResShiftMobileViT/output/VIT2T1T2/ckpts/model_12500.pth
+save_dir: /scratch/p26/hlake1/ResShiftMobileViT/output
+
+trainer:
+  target: trainer.TrainerDifIRLPIPS
+
+autoencoder:
+  target: ldm.models.autoencoder.VQModelTorch
+  ckpt_path: null
+  use_fp16: True
+  tune_decoder: False 
+  params:
+    embed_dim: 1
+    n_embed: 8192
+    ddconfig:
+      double_z: False
+      z_channels: 3
+      resolution: 256
+      in_channels: 1
+      out_ch: 1
+      ch: 128
+      ch_mult:
+      - 1
+      - 2
+      - 4
+      num_res_blocks: 2
+      attn_resolutions: []
+      dropout: 0.0
+      padding_mode: zeros
+    lora_tune_decoder: False
+
+model:
+  target: models.mobilevit_unet.MobileViTUNetHighFidelity 
+  #ckpt_path: /mnt/lustre/zsyue/projects/ResShift/SR/models/swin_v2/Esr256_ImageNet_rescale/S5_K2.0_P0.3/ema_ckpts/ema_model_300000.pth
+  ckpt_path: ~
+  params:
+    image_size: 64
+    in_channels: 1
+    model_channels: 96
+    out_channels: 1
+            
+    
+    cond_lq: True
+    lq_size: 64
+
+diffusion:
+  target: models.script_util.create_gaussian_diffusion
+  params:
+    sf: 4
+    schedule_name: exponential
+    schedule_kwargs:
+      power: 0.3
+    etas_end: 0.99
+    steps: 4
+    min_noise_level: 0.2
+    kappa: 2.0
+    weighted_mse: False
+    predict_type: xstart
+    timestep_respacing: ~
+    scale_factor: 1.0
+    normalize_input: True
+    latent_flag: True
+
+degradation:
+  sf: 4  # Super-resolution scale factor
+  gt_size: 256
+
+  degradation_types: ["kspace_downsampling", "rician_noise", "motion_artifacts"]
+
+  degradation_params:
+    # -- K-space Downsampling --
+    kspace_prob: 1
+    mask_fraction: 0.2
+    # -- Rician Noise --
+    rician_prob: 1
+    noise_std: 0.07
+    # -- Motion Artifacts --
+    motion_prob: 0
+    severity: 2
+
+  second_order_prob: 0.0
+  second_degradation_types: ["kspace_downsampling", "motion_artifacts"]
+  kspace_downsampling2:
+    mask_fraction: 0.4
+  motion_artifacts2:
+    severity: 2
+
+  resize_back: False
+  use_sharp: False
+
+data:
+  train:
+    type: mrit1t2
+    params:
+      dir_path_t1: "/scratch/p26/hlake1/ResShiftMobileViT/MRI IXI/TrainingT1"
+      dir_path_t2: "/scratch/p26/hlake1/ResShiftMobileViT/MRI IXI/TrainingT2"
+      transform_type: mri
+      transform_kwargs:
+        mean: 0.0
+        std: 1.0
+      recursive: True
+
+  val:
+    type: mrit1t2
+    params:
+      dir_path_t1: "/scratch/p26/hlake1/ResShiftMobileViT/MRI IXI/ValidationT1"
+      dir_path_t2: "/scratch/p26/hlake1/ResShiftMobileViT/MRI IXI/ValidationT2"
+      transform_type: mri
+      transform_kwargs:
+        mean: 0.0
+        std: 1.0
+      recursive: True
+
+train:
+  # learning rate
+  lr: 5e-7                      # initial learning rate
+  lr_min: 1e-8                  # minimum learning rate after scheduling
+  lr_schedule: cosine
+  lr_step_size: 5000
+  lr_gamma: 0.5           
+  warmup_iterations: 3000        
+  
+  # dataloader settings
+  batch: [8, 1]                
+  microbatch: 2                 # consider smaller microbatch if GPU memory is limited
+  num_workers: 0                
+  prefetch_factor: null            # enable prefetching for performance
+  
+  # optimization settings
+  weight_decay: 1e-5            # recommended small weight decay for regularization
+  ema_rate: 0.999
+  
+  iterations: 32000              # recommended number of iterations (adjust based on your dataset)
+  
+  # checkpoint and logging settings
+  save_freq: 500                # save checkpoints every 500 iterations
+  log_freq: [500, 500, 5]        # logs less frequently: [train_loss, train_imgs, val_imgs]
+  loss_weights:
+    initial:
+      mse: 0.8
+      lpips: 0.05
+      ssim: 0.15
+      tv: 0.001
+    final:
+      mse: 0.4
+      lpips: 0.2
+      ssim: 0.4
+      tv: 0.001
+    ramp_iters: 10000
+
+  local_logging: True           # manually save images
+  tf_logging: True              # enable TensorBoard logging for better visualization
+  
+  # validation settings
+  use_ema_val: True             # EMA usually improves validation accuracy
+  val_freq: 1000000             # validate every x iterations
+  val_y_channel: True
+  val_resolution: 64 # ${model.params.lq_size}
+  val_padding_mode: reflect
+  
+  # training settings
+  use_amp: False                 # AMP (automatic mixed precision) recommended if GPU supports it
+  seed: 123456
+  global_seeding: True          # enable global seeding for reproducibility
+  
+  # model compile settings
+  compile:
+    flag: False                  # compile the model for speed-up (PyTorch >=2.0 recommended)
+    mode: default               # 'default' provides balanced optimization; use 'max-autotune' for aggressive optimization
+
+  use_wandb: true
+  wandb_project: gpu-monitoring
+  wandb_run_name: mri_gpu_tracking
